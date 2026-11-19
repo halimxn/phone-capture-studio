@@ -11,7 +11,7 @@ from PySide6.QtGui import (
     QPen,
     QPixmap,
 )
-from PySide6.QtWidgets import QFrame, QPushButton, QScrollArea, QWidget
+from PySide6.QtWidgets import QFrame, QScrollArea, QWidget
 from . import komponen, tema
 
 
@@ -53,6 +53,8 @@ class KanvasArea(QWidget):
         self.timer_ants = QTimer(self)
         self.timer_ants.timeout.connect(self._langkah_ants)
         self.timer_ants.start(120)
+
+        self._alat_sementara = None
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -105,7 +107,7 @@ class KanvasArea(QWidget):
             self.mode_pas = True
         else:
             self.mode_pas = False
-            self.skala = max(0.1, min(5.0, skala_desimal))
+            self.skala = max(0.1, min(8.0, skala_desimal))
         self.sesuaikan_ukuran()
         self.update()
 
@@ -114,12 +116,16 @@ class KanvasArea(QWidget):
         self.seleksi_berubah.emit(0, 0, 0, 0)
         self.update()
 
-    def set_seleksi_piksel(self, x, y, w, h):
+    def set_seleksi_piksel(self, x, y, w, h, geser=False):
         if not self.pixmap_asli:
             return
         iw = self.pixmap_asli.width()
         ih = self.pixmap_asli.height()
 
+        if geser:
+            # Saat memindahkan, kotak menempel di tepi tanpa berubah ukuran
+            x = max(0, min(iw - w, x))
+            y = max(0, min(ih - h, y))
         x = max(0, min(iw - 5, x))
         y = max(0, min(ih - 5, y))
         w = max(0, min(iw - x, w))
@@ -132,6 +138,98 @@ class KanvasArea(QWidget):
         self.has_sel = (w > 5 and h > 5)
         self.seleksi_berubah.emit(self.sel_x, self.sel_y, self.sel_w, self.sel_h)
         self.update()
+
+    def _area_gulir(self):
+        w = self.parentWidget()
+        while w is not None and not isinstance(w, QScrollArea):
+            w = w.parentWidget()
+        return w
+
+    def zoom_di(self, faktor, titik=None):
+        """Mengubah zoom sambil menjaga piksel di bawah kursor tetap di tempat."""
+        if not self.pixmap_asli:
+            return
+        sa = self._area_gulir()
+        if titik is None or sa is None:
+            self.mode_pas = False
+            self.skala = max(0.1, min(8.0, self.skala * faktor))
+            self.sesuaikan_ukuran()
+            self.update()
+            return
+        titik_vp = self.mapTo(sa.viewport(), titik)
+        img_x = titik.x() / self.skala
+        img_y = titik.y() / self.skala
+        self.mode_pas = False
+        self.skala = max(0.1, min(8.0, self.skala * faktor))
+        self.sesuaikan_ukuran()
+        sa.horizontalScrollBar().setValue(int(round(img_x * self.skala - titik_vp.x())))
+        sa.verticalScrollBar().setValue(int(round(img_y * self.skala - titik_vp.y())))
+        self.update()
+
+    def geser_seleksi(self, dx, dy):
+        if self.has_sel:
+            self.set_seleksi_piksel(self.sel_x + dx, self.sel_y + dy, self.sel_w, self.sel_h, geser=True)
+
+    def keyPressEvent(self, event):
+        k = event.key()
+        langkah = 10 if event.modifiers() & Qt.ShiftModifier else 1
+        arah = {Qt.Key_Left: (-1, 0), Qt.Key_Right: (1, 0), Qt.Key_Up: (0, -1), Qt.Key_Down: (0, 1)}
+        if k in arah and self.has_sel:
+            dx, dy = arah[k]
+            self.geser_seleksi(dx * langkah, dy * langkah)
+            event.accept()
+            return
+        if k == Qt.Key_Space and not event.isAutoRepeat() and self.pixmap_asli and self._alat_sementara is None:
+            # Tahan Spasi untuk menggeser kanvas sementara
+            self._alat_sementara = self.alat_aktif
+            self.alat_aktif = "geser"
+            self.setCursor(Qt.OpenHandCursor)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        if event.key() == Qt.Key_Space and not event.isAutoRepeat() and self._alat_sementara is not None:
+            self.alat_aktif = self._alat_sementara
+            self._alat_sementara = None
+            self.setCursor({"geser": Qt.OpenHandCursor, "zoom": Qt.PointingHandCursor}.get(self.alat_aktif, Qt.CrossCursor))
+            event.accept()
+            return
+        super().keyReleaseEvent(event)
+
+    def _ubah_ukuran(self, mode, dx, dy):
+        """Mengubah ukuran seleksi dari salah satu dari 8 pegangan, menghormati kunci rasio."""
+        ox, oy, ow, oh = self.sel_start_box
+        x0, y0, x1, y1 = ox, oy, ox + ow, oy + oh
+        if "w" in mode:
+            x0 = min(x1 - 10, x0 + dx)
+        if "e" in mode:
+            x1 = max(x0 + 10, x1 + dx)
+        if "n" in mode:
+            y0 = min(y1 - 10, y0 + dy)
+        if "s" in mode:
+            y1 = max(y0 + 10, y1 + dy)
+
+        r = self.rasio_kunci
+        if r:
+            if mode in ("n", "s"):
+                lebar = int(round((y1 - y0) * r))
+                x0 = int(round(ox + ow / 2 - lebar / 2))
+                x1 = x0 + lebar
+            else:
+                tinggi = int(round((x1 - x0) / r))
+                if mode in ("e", "w"):
+                    y0 = int(round(oy + oh / 2 - tinggi / 2))
+                    y1 = y0 + tinggi
+                elif "n" in mode:
+                    y0 = y1 - tinggi
+                else:
+                    y1 = y0 + tinggi
+
+        iw, ih = self.pixmap_asli.width(), self.pixmap_asli.height()
+        x0, y0 = max(0, x0), max(0, y0)
+        x1, y1 = min(iw, x1), min(ih, y1)
+        self.set_seleksi_piksel(x0, y0, x1 - x0, y1 - y0)
 
     def _client_ke_img(self, pt):
         if not self.pixmap_asli or self.skala <= 0:
@@ -180,9 +278,9 @@ class KanvasArea(QWidget):
     def _cta_rect(self):
         cx = self.width() // 2
         cy = self.height() // 2
-        btn_w = 270
-        btn_h = 42
-        return QRect(cx - btn_w // 2, cy + 70, btn_w, btn_h)
+        btn_w = 260
+        btn_h = 40
+        return QRect(cx - btn_w // 2, cy + 84, btn_w, btn_h)
 
     def mousePressEvent(self, event):
         if not self.pixmap_asli:
@@ -200,10 +298,8 @@ class KanvasArea(QWidget):
 
         if event.button() == Qt.LeftButton:
             if self.alat_aktif == "zoom":
-                self.mode_pas = False
-                self.skala = min(4.0, self.skala * 1.25)
-                self.sesuaikan_ukuran()
-                self.update()
+                faktor = 0.8 if event.modifiers() & Qt.AltModifier else 1.25
+                self.zoom_di(faktor, event.position().toPoint())
                 return
 
             pos = event.position().toPoint()
@@ -270,31 +366,19 @@ class KanvasArea(QWidget):
 
             if self.drag_mode == "create":
                 ix, iy = self._client_ke_img(pos)
-                sx = min(ox, ix)
-                sy = min(oy, iy)
                 sw = abs(ix - ox)
-                sh = abs(iy - oy)
+                sx = min(ox, ix)
                 if self.rasio_kunci:
                     sh = int(round(sw / self.rasio_kunci))
+                    sy = oy if iy >= oy else oy - sh
+                else:
+                    sh = abs(iy - oy)
+                    sy = min(oy, iy)
                 self.set_seleksi_piksel(sx, sy, sw, sh)
             elif self.drag_mode == "move":
-                self.set_seleksi_piksel(ox + dx_px, oy + dy_px, ow, oh)
-            elif self.drag_mode == "se":
-                nw = max(10, ow + dx_px)
-                nh = int(round(nw / self.rasio_kunci)) if self.rasio_kunci else max(10, oh + dy_px)
-                self.set_seleksi_piksel(ox, oy, nw, nh)
-            elif self.drag_mode == "e":
-                nw = max(10, ow + dx_px)
-                nh = int(round(nw / self.rasio_kunci)) if self.rasio_kunci else oh
-                self.set_seleksi_piksel(ox, oy, nw, nh)
-            elif self.drag_mode == "s":
-                nh = max(10, oh + dy_px)
-                nw = int(round(nh * self.rasio_kunci)) if self.rasio_kunci else ow
-                self.set_seleksi_piksel(ox, oy, nw, nh)
-            elif self.drag_mode == "nw":
-                nw = max(10, ow - dx_px)
-                nh = int(round(nw / self.rasio_kunci)) if self.rasio_kunci else max(10, oh - dy_px)
-                self.set_seleksi_piksel(ox + (ow - nw), oy + (oh - nh), nw, nh)
+                self.set_seleksi_piksel(ox + dx_px, oy + dy_px, ow, oh, geser=True)
+            else:
+                self._ubah_ukuran(self.drag_mode, dx_px, dy_px)
 
             event.accept()
 
@@ -315,11 +399,10 @@ class KanvasArea(QWidget):
         if event.modifiers() & Qt.ControlModifier:
             event.accept()
             delta = event.angleDelta().y()
+            if delta == 0:
+                return
             faktor = 1.15 if delta > 0 else (1.0 / 1.15)
-            self.mode_pas = False
-            self.skala = max(0.1, min(5.0, self.skala * faktor))
-            self.sesuaikan_ukuran()
-            self.update()
+            self.zoom_di(faktor, event.position().toPoint())
         else:
             event.ignore()
 
@@ -358,17 +441,17 @@ class KanvasArea(QWidget):
             # Judul & Subteks
             painter.setPen(QColor(tema.TOKEN["teks-utama"]))
             font_judul = QFont(self.font())
-            font_judul.setPixelSize(14)
+            font_judul.setPixelSize(16)
             font_judul.setBold(True)
             painter.setFont(font_judul)
-            painter.drawText(QRect(cx - 200, cy + 25, 400, 24), Qt.AlignCenter, "Siap Mengambil Layar Android")
+            painter.drawText(QRect(cx - 250, cy + 22, 500, 24), Qt.AlignCenter, "Siap Mengambil Layar Android")
 
             painter.setPen(QColor(tema.TOKEN["teks-redup"]))
             font_sub = QFont(self.font())
-            font_sub.setPixelSize(11)
+            font_sub.setPixelSize(12)
             painter.setFont(font_sub)
             painter.drawText(
-                QRect(cx - 250, cy + 50, 500, 20),
+                QRect(cx - 300, cy + 52, 600, 20),
                 Qt.AlignCenter,
                 "Sambungkan ponsel via USB (mode transfer file & aktifkan USB Debugging)",
             )
@@ -390,7 +473,7 @@ class KanvasArea(QWidget):
             # Ikon Kamera Vektor
             lukis_kamera = getattr(komponen, "lukis_ikon_vektor", None)
             if lukis_kamera:
-                lukis_kamera(painter, "kamera", btn_rect.left() + 22, btn_rect.center().y(), QColor("#ffffff"), sz=16)
+                lukis_kamera(painter, "kamera", btn_rect.left() + 22, btn_rect.center().y() + 0.5, QColor("#ffffff"), sz=16)
 
             # Teks CTA
             painter.setPen(QColor("#ffffff"))
@@ -398,11 +481,11 @@ class KanvasArea(QWidget):
             font_btn.setPixelSize(12)
             font_btn.setBold(True)
             painter.setFont(font_btn)
-            rect_txt = QRect(btn_rect.left() + 38, btn_rect.top(), btn_rect.width() - 86, btn_rect.height())
+            rect_txt = QRect(btn_rect.left() + 40, btn_rect.top(), btn_rect.width() - 92, btn_rect.height())
             painter.drawText(rect_txt, Qt.AlignVCenter | Qt.AlignLeft, "Ambil Layar Sekarang")
 
             # Kbd badge F5
-            kbd_rect = QRect(btn_rect.right() - 44, btn_rect.center().y() - 10, 32, 20)
+            kbd_rect = QRect(btn_rect.right() - 45, btn_rect.center().y() - 10, 32, 20)
             painter.setBrush(QColor(0, 0, 0, 70))
             painter.setPen(QPen(QColor(255, 255, 255, 35), 1))
             painter.drawRoundedRect(kbd_rect, 4, 4)
@@ -419,15 +502,23 @@ class KanvasArea(QWidget):
             font_info.setPixelSize(11)
             painter.setFont(font_info)
             painter.drawText(
-                QRect(cx - 280, cy + 122, 560, 18),
+                QRect(cx - 300, cy + 142, 600, 18),
                 Qt.AlignCenter,
                 "Setelah layar muncul, tarik kotak lalu tekan Enter. Tekan A untuk deteksi otomatis.",
+            )
+            painter.drawText(
+                QRect(cx - 300, cy + 162, 600, 18),
+                Qt.AlignCenter,
+                "Tanpa HP? Buka gambar dengan Ctrl+O atau seret berkas ke jendela ini.",
             )
             return
 
         # 2. Gambar Screenshot Presisi
         target_rect = QRect(0, 0, self.width(), self.height())
+        # Di bawah 100% gambar dihaluskan; di atasnya piksel tampil apa adanya agar seleksi presisi
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, self.skala < 1.0)
         painter.drawPixmap(target_rect, self.pixmap_asli)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
 
         # 3. Gambar Seleksi Kotak (Marquee)
         if self.has_sel and self.sel_w > 2 and self.sel_h > 2:

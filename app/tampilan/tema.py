@@ -163,9 +163,9 @@ def qss_utama():
         background: rgba(255, 255, 255, 0.04);
         color: {TOKEN['teks-kedua']};
         border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 5px;
-        padding: 4px 10px;
-        font-size: 11px;
+        border-radius: 6px;
+        padding: 0px 12px;
+        font-size: 12px;
         font-weight: 500;
     }}
     QPushButton.halus:hover {{
@@ -191,10 +191,11 @@ def qss_utama():
         background: rgba(255, 255, 255, 0.04);
         border: 1px solid rgba(255, 255, 255, 0.08);
         border-radius: 6px;
-        padding: 4px 10px;
+        padding: 0px 8px 0px 10px;
         color: {TOKEN['teks-utama']};
         font-size: 12px;
-        min-height: 22px;
+        min-height: 24px;
+        max-height: 24px;
     }}
     QComboBox:hover {{
         background: rgba(255, 255, 255, 0.07);
@@ -210,7 +211,7 @@ def qss_utama():
     }}
     QComboBox::drop-down {{
         subcontrol-origin: padding;
-        subcontrol-position: top right;
+        subcontrol-position: center right;
         width: 20px;
         border-left: none;
     }}
@@ -299,6 +300,23 @@ def qss_utama():
         border-radius: 4px;
         padding: 4px 8px;
         font-size: 11px;
+    }}
+
+    /* Menu konteks */
+    QMenu {{
+        background-color: #232323;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 6px;
+        padding: 4px;
+    }}
+    QMenu::item {{
+        padding: 6px 22px 6px 12px;
+        border-radius: 4px;
+        font-size: 12px;
+    }}
+    QMenu::item:selected {{
+        background-color: {TOKEN['aksen']};
+        color: #ffffff;
     }}
 
     /* Splitter Hairline */

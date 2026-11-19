@@ -8,6 +8,7 @@ from PySide6.QtGui import (
     QLinearGradient,
     QPainter,
     QPainterPath,
+    QImageReader,
     QPen,
     QPixmap,
 )
@@ -106,6 +107,19 @@ def lukis_ikon_vektor(p, jenis, cx, cy, warna, sz=16):
     elif jenis == "panel":
         p.drawRoundedRect(QRectF(cx - 6, cy - 5, 12, 10), 2, 2)
         p.drawLine(QPointF(cx + 1, cy - 5), QPointF(cx + 1, cy + 5))
+    elif jenis == "gambar":
+        p.drawRoundedRect(QRectF(cx - 7, cy - 5.5, 14, 11), 2, 2)
+        p.drawEllipse(QPointF(cx + 3, cy - 2), 1.4, 1.4)
+        path = QPainterPath()
+        path.moveTo(cx - 7, cy + 4)
+        path.lineTo(cx - 2.5, cy - 0.5)
+        path.lineTo(cx + 1, cy + 3)
+        path.lineTo(cx + 3, cy + 1.5)
+        path.lineTo(cx + 7, cy + 5)
+        p.drawPath(path)
+    elif jenis == "salin":
+        p.drawRoundedRect(QRectF(cx - 3, cy - 6, 9, 10), 1.5, 1.5)
+        p.drawRoundedRect(QRectF(cx - 6, cy - 3, 9, 10), 1.5, 1.5)
     elif jenis == "otomatis":
         p.drawLine(QPointF(cx, cy - 6), QPointF(cx, cy + 6))
         p.drawLine(QPointF(cx - 6, cy), QPointF(cx + 6, cy))
@@ -214,7 +228,7 @@ class TombolAksiHero(QPushButton):
             fm_k = p.fontMetrics()
             kw_box = fm_k.horizontalAdvance(self.shortcut) + 12
             kh_box = 20
-            kx = w - kw_box - 10
+            kx = w - kw_box - 12
             ky = int((h - kh_box) / 2.0) + y_offset
 
             p.setBrush(QColor(0, 0, 0, 60))
@@ -279,15 +293,15 @@ class TombolAksiTaktil(QPushButton):
 
         warna_teks = QColor(tema.TOKEN["teks-mati"] if is_disabled else ("#ffffff" if is_hover else tema.TOKEN["teks-utama"]))
         if self.jenis_ikon:
-            lukis_ikon_vektor(p, self.jenis_ikon, 16, (h / 2.0) + y_offset, warna_teks, sz=14)
+            lukis_ikon_vektor(p, self.jenis_ikon, 17, (h / 2.0) + y_offset, warna_teks, sz=14)
 
         p.setFont(self.font())
         fm = p.fontMetrics()
         kw_total = (fm.horizontalAdvance(self.shortcut) + 14) if self.shortcut else 0
 
         p.setPen(warna_teks)
-        start_x = 30 if self.jenis_ikon else 10
-        rect_teks = QRect(start_x, y_offset, w - start_x - kw_total - 10, h)
+        start_x = 32 if self.jenis_ikon else 12
+        rect_teks = QRect(start_x, y_offset, w - start_x - kw_total - 12, h)
         p.drawText(rect_teks, Qt.AlignVCenter | (Qt.AlignLeft if (self.jenis_ikon or self.shortcut) else Qt.AlignCenter), self.teks)
 
         if self.shortcut:
@@ -299,9 +313,9 @@ class TombolAksiTaktil(QPushButton):
             font_kbd.setBold(True)
             p.setFont(font_kbd)
             fm_k = p.fontMetrics()
-            kw = fm_k.horizontalAdvance(self.shortcut) + 8
-            kh = 17
-            kx = w - kw - 8
+            kw = fm_k.horizontalAdvance(self.shortcut) + 10
+            kh = 18
+            kx = w - kw - 10
             ky = int((h - kh) / 2.0) + y_offset
 
             p.setBrush(QColor(255, 255, 255, 14))
@@ -336,9 +350,9 @@ class TombolChipAksi(QPushButton):
     def sizeHint(self):
         fm = self.fontMetrics()
         tw = fm.horizontalAdvance(self.teks) if self.teks else 0
-        iw = 20 if self.jenis_ikon else 0
-        spacing = 6 if (self.teks and self.jenis_ikon) else 0
-        pad = 22 if self.teks else 10
+        iw = 14 if self.jenis_ikon else 0
+        spacing = 7 if (self.teks and self.jenis_ikon) else 0
+        pad = 20 if self.teks else 14
         return QSize(tw + iw + spacing + pad, 28)
 
     def minimumSizeHint(self):
@@ -374,10 +388,10 @@ class TombolChipAksi(QPushButton):
         if self.jenis_ikon and not self.teks:
             lukis_ikon_vektor(p, self.jenis_ikon, w / 2.0, (h / 2.0) + y_offset, warna, sz=14)
         elif self.jenis_ikon and self.teks:
-            lukis_ikon_vektor(p, self.jenis_ikon, 14, (h / 2.0) + y_offset, warna, sz=13)
+            lukis_ikon_vektor(p, self.jenis_ikon, 17, (h / 2.0) + y_offset, warna, sz=13)
             p.setFont(self.font())
             p.setPen(warna)
-            p.drawText(QRect(26, y_offset, w - 30, h), Qt.AlignVCenter | Qt.AlignLeft, self.teks)
+            p.drawText(QRect(31, y_offset, w - 41, h), Qt.AlignVCenter | Qt.AlignLeft, self.teks)
         else:
             p.setFont(self.font())
             p.setPen(warna)
@@ -444,18 +458,18 @@ class KotakDimensiTerpadu(QFrame):
         super().__init__(parent)
         self.setFixedHeight(26)
         self.setStyleSheet("""
-            QFrame {
+            KotakDimensiTerpadu {
                 background-color: rgba(255, 255, 255, 0.05);
                 border: none;
                 border-radius: 5px;
             }
         """)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(8, 0, 8, 0)
-        lay.setSpacing(6)
+        lay.setContentsMargins(10, 0, 4, 0)
+        lay.setSpacing(8)
+        self.setMinimumWidth(150)
 
         self.lbl_teks = QLabel("Belum ada seleksi")
-        self.lbl_teks.setStyleSheet(f"color: {tema.TOKEN['teks-utama']}; font-weight: 600; font-size: 11px;")
         lay.addWidget(self.lbl_teks)
 
         self.lbl_rasio = QLabel("-")
@@ -464,8 +478,8 @@ class KotakDimensiTerpadu(QFrame):
             color: {tema.TOKEN['aksen-atas']};
             font-weight: 700;
             font-size: 10px;
-            padding: 1px 6px;
-            border-radius: 3px;
+            padding: 2px 6px;
+            border-radius: 4px;
             border: none;
         """)
         self.lbl_rasio.setVisible(False)
@@ -474,7 +488,7 @@ class KotakDimensiTerpadu(QFrame):
 
     def set_dimensi(self, w, h):
         if w > 0 and h > 0:
-            self.lbl_teks.setStyleSheet(f"color: {tema.TOKEN['teks-utama']}; font-weight: 600; font-size: 11px;")
+            self.lbl_teks.setStyleSheet(f"background: transparent; color: {tema.TOKEN['teks-utama']}; font-weight: 600; font-size: 12px;")
             self.lbl_teks.setText(f"{w} × {h} px")
             self.lbl_rasio.setVisible(True)
             gcd = math.gcd(w, h)
@@ -485,7 +499,7 @@ class KotakDimensiTerpadu(QFrame):
             else:
                 self.lbl_rasio.setText(f"{w/h:.2f}")
         else:
-            self.lbl_teks.setStyleSheet(f"color: {tema.TOKEN['teks-redup']}; font-weight: 500; font-size: 11px;")
+            self.lbl_teks.setStyleSheet(f"background: transparent; color: {tema.TOKEN['teks-redup']}; font-weight: 500; font-size: 12px;")
             self.lbl_teks.setText("Belum ada seleksi")
             self.lbl_rasio.setVisible(False)
 
@@ -503,7 +517,7 @@ class SegmenPilihanAdobe(QFrame):
         self.tombol_list = []
 
         self.setStyleSheet("""
-            QFrame {
+            SegmenPilihanAdobe {
                 background-color: rgba(0, 0, 0, 0.32);
                 border: 1px solid rgba(255, 255, 255, 0.06);
                 border-radius: 13px;
@@ -543,8 +557,8 @@ class SegmenPilihanAdobe(QFrame):
                     color: #ffffff;
                     border: none;
                     border-radius: 11px;
-                    padding: 0px 8px;
-                    font-size: 11px;
+                    padding: 0px 10px;
+                    font-size: 12px;
                     font-weight: 600;
                 }}
                 QPushButton:disabled {{
@@ -559,8 +573,8 @@ class SegmenPilihanAdobe(QFrame):
                     color: {tema.TOKEN['teks-kedua']};
                     border: none;
                     border-radius: 11px;
-                    padding: 0px 8px;
-                    font-size: 11px;
+                    padding: 0px 10px;
+                    font-size: 12px;
                     font-weight: 500;
                 }}
                 QPushButton:hover {{
@@ -622,12 +636,12 @@ class PanelAccordionAdobe(QFrame):
             }}
         """)
         self.lay_induk = QVBoxLayout(self)
-        self.lay_induk.setContentsMargins(14, 12, 14, 14)
-        self.lay_induk.setSpacing(8)
+        self.lay_induk.setContentsMargins(16, 10, 16, 16)
+        self.lay_induk.setSpacing(10)
 
         # Header bar
         self.btn_header = QPushButton()
-        self.btn_header.setFixedHeight(24)
+        self.btn_header.setFixedHeight(28)
         self.btn_header.setCursor(Qt.PointingHandCursor)
         self.btn_header.setStyleSheet("""
             QPushButton {
@@ -642,7 +656,7 @@ class PanelAccordionAdobe(QFrame):
             }
         """)
         h_lay = QHBoxLayout(self.btn_header)
-        h_lay.setContentsMargins(2, 0, 2, 0)
+        h_lay.setContentsMargins(0, 0, 0, 0)
         h_lay.setSpacing(8)
 
         self.chevron = ChevronAdobe(self.terbuka)
@@ -664,7 +678,7 @@ class PanelAccordionAdobe(QFrame):
         # Kontainer Konten
         self.konten = QWidget()
         self.lay_konten = QVBoxLayout(self.konten)
-        self.lay_konten.setContentsMargins(0, 2, 0, 0)
+        self.lay_konten.setContentsMargins(0, 0, 0, 0)
         self.lay_konten.setSpacing(8)
         self.lay_induk.addWidget(self.konten)
 
@@ -688,21 +702,22 @@ class LencanaStatus(QFrame):
 
     def __init__(self, teks="Mencari HP...", status="warn", parent=None):
         super().__init__(parent)
-        self.setFixedHeight(26)
+        self.setFixedHeight(28)
         self.setStyleSheet("""
-            QFrame {
+            LencanaStatus {
                 background-color: rgba(255, 255, 255, 0.04);
                 border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 13px;
+                border-radius: 14px;
             }
         """)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 0, 10, 0)
-        lay.setSpacing(6)
+        lay.setContentsMargins(12, 0, 12, 0)
+        lay.setSpacing(7)
 
         self.dot = QLabel("●")
+        self.dot.setAttribute(Qt.WA_TranslucentBackground)
         self.lbl = QLabel(teks)
-        self.lbl.setStyleSheet(f"font-size: 11px; font-weight: 500; color: {tema.TOKEN['teks-utama']};")
+        self.lbl.setStyleSheet(f"background: transparent; font-size: 12px; font-weight: 500; color: {tema.TOKEN['teks-utama']};")
         lay.addWidget(self.dot)
         lay.addWidget(self.lbl)
         self.set_status(teks, status)
@@ -714,7 +729,7 @@ class LencanaStatus(QFrame):
             warna = tema.TOKEN["status-warn"]
         elif status == "err":
             warna = tema.TOKEN["status-err"]
-        self.dot.setStyleSheet(f"font-size: 10px; color: {warna};")
+        self.dot.setStyleSheet(f"background: transparent; font-size: 9px; color: {warna};")
 
 
 class KartuRiwayatItem(QWidget):
@@ -738,10 +753,16 @@ class KartuRiwayatItem(QWidget):
 
         dimensi = "Foto tersimpan"
         if jalur:
-            pix = QPixmap(jalur)
-            if not pix.isNull():
-                self.lbl_thumb.setPixmap(pix.scaled(36, 48, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
-                dimensi = f"{pix.width()} × {pix.height()} px"
+            pembaca = QImageReader(jalur)
+            ukuran = pembaca.size()
+            if ukuran.isValid() and ukuran.width() > 0:
+                dimensi = f"{ukuran.width()} × {ukuran.height()} px"
+                skala = max(72 / ukuran.width(), 96 / ukuran.height())
+                pembaca.setScaledSize(ukuran * min(1.0, skala))
+                img = pembaca.read()
+                if not img.isNull():
+                    pix = QPixmap.fromImage(img).scaled(36, 48, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+                    self.lbl_thumb.setPixmap(pix)
 
         lay.addWidget(self.lbl_thumb)
 
@@ -751,11 +772,11 @@ class KartuRiwayatItem(QWidget):
         lay_info.setSpacing(2)
 
         lbl_nama = QLabel(nama)
-        lbl_nama.setStyleSheet(f"font-weight: 600; font-size: 11px; color: {tema.TOKEN['teks-utama']};")
+        lbl_nama.setStyleSheet(f"font-weight: 500; font-size: 12px; color: {tema.TOKEN['teks-utama']};")
         lay_info.addWidget(lbl_nama)
 
         lbl_dim = QLabel(dimensi)
-        lbl_dim.setStyleSheet(f"font-size: 10px; color: {tema.TOKEN['teks-redup']};")
+        lbl_dim.setStyleSheet(f"font-size: 11px; color: {tema.TOKEN['teks-redup']};")
         lay_info.addWidget(lbl_dim)
 
         lay.addLayout(lay_info, 1)
@@ -768,15 +789,18 @@ class NotifikasiToast(QFrame):
         super().__init__(parent)
         self.setFixedHeight(34)
         self.setStyleSheet(f"""
-            QFrame {{
-                background-color: rgba(20, 20, 20, 94%);
-                border: 1px solid {tema.TOKEN['aksen']};
+            NotifikasiToast {{
+                background-color: rgba(28, 28, 28, 0.96);
+                border: 1px solid {tema.TOKEN['garis-terang']};
                 border-radius: 17px;
-                padding: 0px 14px;
+            }}
+            NotifikasiToast QLabel {{
+                background: transparent;
+                border: none;
             }}
         """)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(12, 0, 12, 0)
+        lay.setContentsMargins(14, 0, 16, 0)
         lay.setSpacing(8)
 
         self.lbl_icon = QLabel("✓")
@@ -784,7 +808,7 @@ class NotifikasiToast(QFrame):
         lay.addWidget(self.lbl_icon)
 
         self.lbl_pesan = QLabel("Tersimpan")
-        self.lbl_pesan.setStyleSheet("color: #ffffff; font-weight: 600; font-size: 11px;")
+        self.lbl_pesan.setStyleSheet("color: #ffffff; font-weight: 500; font-size: 12px;")
         lay.addWidget(self.lbl_pesan)
 
         self.timer = QTimer(self)

@@ -4,17 +4,20 @@ import math
 import os
 import subprocess
 from PIL import Image
-from PySide6.QtCore import QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QSettings, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -37,17 +40,98 @@ def _pemisah():
     return garis
 
 
+EKSTENSI_GAMBAR = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+
+
+def _baca_status_hp():
+    """Dijalankan di benang latar: semua panggilan adb yang lambat dikumpulkan di sini."""
+    serial, status, pesan = adb.cek_perangkat()
+    model = info = None
+    if status == "device":
+        model = adb.model_perangkat(serial) or "Perangkat Android"
+        info = adb.info_layar(serial)
+    return serial, status, model, info
+
+
+def _potong_massal(folder, folder_asli, lapor):
+    """Memotong layar penampil di folder; yang sudah dipotong dilewati, aslinya dicadangkan."""
+    import shutil
+    berkas = sorted(f for f in os.listdir(folder) if f.lower().endswith(".png"))
+    dipotong = dilewati = gagal = 0
+    for i, f in enumerate(berkas, 1):
+        lapor(i, len(berkas))
+        jalur = os.path.join(folder, f)
+        try:
+            with Image.open(jalur) as img:
+                img.load()
+                if not processor.belum_dipotong(img):
+                    dilewati += 1
+                    continue
+                x, y, w, h = processor.deteksi_kotak_foto(img)
+                if w <= 100 or h <= 100:
+                    dilewati += 1
+                    continue
+                cadangan = os.path.join(folder_asli, f)
+                if not os.path.exists(cadangan):
+                    shutil.copy2(jalur, cadangan)
+                potongan = img.crop((x, y, x + w, y + h))
+            potongan.save(jalur, optimize=True)
+            dipotong += 1
+        except Exception:
+            gagal += 1
+    return {"dipotong": dipotong, "dilewati": dilewati, "gagal": gagal, "total": len(berkas)}
+
+
+def _hd_massal(folder, folder_hd, lapor):
+    berkas = sorted(f for f in os.listdir(folder) if f.lower().endswith(".png"))
+    dibuat = gagal = 0
+    for i, f in enumerate(berkas, 1):
+        lapor(i, len(berkas))
+        try:
+            with Image.open(os.path.join(folder, f)) as img:
+                hd = processor.proses_hd_lanczos(img)
+            hd.save(os.path.join(folder_hd, f.replace("layar_", "hd_")), optimize=True)
+            dibuat += 1
+        except Exception:
+            gagal += 1
+    return {"dibuat": dibuat, "gagal": gagal, "total": len(berkas)}
+
+
+class PekerjaFungsi(QThread):
+    """Menjalankan fungsi biasa di benang latar. Hasil: (hasil, galat)."""
+
+    selesai = Signal(object, object)
+    kemajuan = Signal(int, int)
+
+    def __init__(self, fn, *args, dengan_kemajuan=False):
+        super().__init__()
+        self.fn = fn
+        self.args = args
+        self.dengan_kemajuan = dengan_kemajuan
+
+    def run(self):
+        try:
+            if self.dengan_kemajuan:
+                hasil = self.fn(*self.args, self.kemajuan.emit)
+            else:
+                hasil = self.fn(*self.args)
+            self.selesai.emit(hasil, None)
+        except Exception as e:
+            self.selesai.emit(None, str(e))
+
+
 class PekerjaAmbilLayar(QThread):
     """Benang latar belakang untuk mengambil tangkapan layar via ADB tanpa memblokir antarmuka."""
 
     selesai = Signal(object, str)
 
-    def __init__(self, serial_hp):
-        super().__init__()
-        self.serial = serial_hp
-
     def run(self):
-        raw_png, err = adb.ambil_tangkapan_layar(self.serial)
+        # Status diperiksa di sini (bukan di benang UI) agar F5 tidak membuat jendela tersendat
+        serial, status, pesan = adb.cek_perangkat()
+        if status != "device":
+            self.selesai.emit(None, pesan)
+            return
+        raw_png, err = adb.ambil_tangkapan_layar(serial)
         self.selesai.emit(raw_png, err)
 
 
@@ -101,7 +185,12 @@ class JendelaUtama(QMainWindow):
         self.pixmap_saat_ini = None
         self.sedang_mengambil = False
         self.sedang_menyimpan = False
+        self.sedang_batch = False
         self._status_koneksi = None
+        self._cek_berjalan = False
+        self._total_foto = 0
+        self._pekerja = set()
+        self.setAcceptDrops(True)
 
         self._bangun_ui()
         self._pasang_pintasan()
@@ -113,6 +202,7 @@ class JendelaUtama(QMainWindow):
 
         QTimer.singleShot(150, self._perbarui_status_hp)
         self._muat_riwayat_awal()
+        self._muat_pengaturan()
         self._perbarui_kontrol()
         self.kanvas_widget.kanvas.setFocus()
 
@@ -183,21 +273,22 @@ class JendelaUtama(QMainWindow):
 
     def _buat_bilah_atas(self):
         bar = QFrame()
-        bar.setFixedHeight(42)
+        bar.setFixedHeight(44)
+        bar.setObjectName("bilahAtas")
         bar.setStyleSheet(f"""
-            QFrame {{
+            QFrame#bilahAtas {{
                 background-color: {tema.TOKEN['latar-bar']};
                 border: none;
                 border-bottom: 1px solid {tema.TOKEN['garis']};
             }}
         """)
         lay = QHBoxLayout(bar)
-        lay.setContentsMargins(14, 0, 12, 0)
-        lay.setSpacing(12)
+        lay.setContentsMargins(12, 0, 10, 0)
+        lay.setSpacing(4)
 
         # Logo Studio Adobe "Pc"
         mark = QLabel("Pc")
-        mark.setFixedSize(24, 24)
+        mark.setFixedSize(26, 26)
         mark.setAlignment(Qt.AlignCenter)
         mark.setStyleSheet("""
             background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1473e6, stop:1 #0c57b8);
@@ -207,20 +298,18 @@ class JendelaUtama(QMainWindow):
             border-radius: 5px;
         """)
         lay.addWidget(mark)
+        lay.addSpacing(10)
 
-        judul = QLabel("Phone Capture Studio")
-        judul.setStyleSheet(f"font-size: 13px; font-weight: 600; color: {tema.TOKEN['teks-utama']};")
-        lay.addWidget(judul)
-        lay.addWidget(_pemisah())
+        mark.setToolTip("Phone Capture Studio")
 
         # Indikator Layar Aktif (Clean & Borderless)
         self.tab_dokumen = QWidget()
         lay_tab = QHBoxLayout(self.tab_dokumen)
-        lay_tab.setContentsMargins(8, 0, 0, 0)
+        lay_tab.setContentsMargins(0, 0, 0, 0)
         lay_tab.setSpacing(6)
 
         self.lbl_dokumen = QLabel("Belum ada layar")
-        self.lbl_dokumen.setStyleSheet(f"color: {tema.TOKEN['teks-redup']}; font-size: 11px;")
+        self.lbl_dokumen.setStyleSheet(f"color: {tema.TOKEN['teks-kedua']}; font-size: 12px;")
         lay_tab.addWidget(self.lbl_dokumen)
 
         lay.addWidget(self.tab_dokumen)
@@ -232,11 +321,17 @@ class JendelaUtama(QMainWindow):
         self.lencana_hp.setToolTip("Klik untuk memperbarui status koneksi USB")
         self.lencana_hp.mousePressEvent = lambda _: self._perbarui_status_hp()
         lay.addWidget(self.lencana_hp)
+        lay.addSpacing(6)
         lay.addWidget(_pemisah())
+        lay.addSpacing(6)
 
         # Tombol pintas buka folder hasil (Clean Ghost Button)
+        btn_buka = komponen.TombolChipAksi("Buka Gambar", jenis_ikon="gambar", tip="Buka tangkapan layar dari PC (Ctrl+O). Bisa juga diseret ke jendela.")
+        btn_buka.clicked.connect(self._aksi_buka_berkas)
+        lay.addWidget(btn_buka)
+
         btn_folder = komponen.TombolChipAksi("Folder Hasil", jenis_ikon="folder", tip="Buka folder penyimpanan foto di Windows Explorer")
-        btn_folder.clicked.connect(lambda: subprocess.Popen(["explorer", lokasi.folder_hasil()]))
+        btn_folder.clicked.connect(lambda: os.startfile(lokasi.folder_hasil()))
         lay.addWidget(btn_folder)
 
         # Tombol toggle Layar Penuh (F11)
@@ -246,7 +341,7 @@ class JendelaUtama(QMainWindow):
 
         # Tombol toggle panel samping
         self.btn_toggle_panel = komponen.TombolChipAksi(jenis_ikon="panel", tip="Sembunyikan / tampilkan panel kanan (Tab)")
-        self.btn_toggle_panel.setFixedWidth(30)
+        self.btn_toggle_panel.setFixedWidth(28)
         self.btn_toggle_panel.clicked.connect(self._toggle_panel_samping)
         lay.addWidget(self.btn_toggle_panel)
 
@@ -254,29 +349,39 @@ class JendelaUtama(QMainWindow):
 
     def _buat_bilah_opsi(self):
         bar = QFrame()
-        bar.setFixedHeight(36)
+        bar.setObjectName("bilahOpsi")
+        bar.setFixedHeight(42)
         bar.setStyleSheet(f"""
-            QFrame {{
+            QFrame#bilahOpsi {{
                 background-color: {tema.TOKEN['latar-opsi']};
                 border: none;
                 border-bottom: 1px solid {tema.TOKEN['garis']};
             }}
         """)
         lay = QHBoxLayout(bar)
-        lay.setContentsMargins(14, 0, 14, 0)
+        lay.setContentsMargins(12, 0, 12, 0)
         lay.setSpacing(12)
 
-        # Kotak Dimensi Terpadu
-        self.box_dimensi = komponen.KotakDimensiTerpadu()
-        lay.addWidget(self.box_dimensi)
+        def label(teks):
+            lbl = QLabel(teks)
+            lbl.setStyleSheet(f"color: {tema.TOKEN['teks-redup']}; font-size: 12px;")
+            return lbl
 
-        # Pengunci Rasio Aspek
-        lbl_rasio = QLabel("Rasio:")
-        lbl_rasio.setStyleSheet(f"color: {tema.TOKEN['teks-redup']}; font-size: 11px;")
-        lay.addWidget(lbl_rasio)
+        def grup(*widget):
+            w = QWidget()
+            l = QHBoxLayout(w)
+            l.setContentsMargins(0, 0, 0, 0)
+            l.setSpacing(8)
+            for x in widget:
+                l.addWidget(x, 0, Qt.AlignVCenter)
+            return w
+
+        self.box_dimensi = komponen.KotakDimensiTerpadu()
+        lay.addWidget(self.box_dimensi, 0, Qt.AlignVCenter)
+        lay.addWidget(_pemisah(), 0, Qt.AlignVCenter)
 
         self.cmb_rasio = QComboBox()
-        self.cmb_rasio.setFixedHeight(24)
+        self.cmb_rasio.setFixedSize(148, 26)
         self.cmb_rasio.addItems([
             "Bebas",
             "1:1 Persegi",
@@ -286,44 +391,36 @@ class JendelaUtama(QMainWindow):
             "16:9 Landscape",
         ])
         self.cmb_rasio.currentIndexChanged.connect(self._pada_pilihan_rasio)
-        lay.addWidget(self.cmb_rasio)
-
-        lay.addWidget(_pemisah())
-
-        # Presets Zoom
-        lbl_z = QLabel("Zoom:")
-        lbl_z.setStyleSheet(f"color: {tema.TOKEN['teks-redup']}; font-size: 11px;")
-        lay.addWidget(lbl_z)
+        lay.addWidget(grup(label("Rasio"), self.cmb_rasio), 0, Qt.AlignVCenter)
+        lay.addWidget(_pemisah(), 0, Qt.AlignVCenter)
 
         self.seg_zoom = komponen.SegmenPilihanAdobe(["Pas", "50%", "100%", "200%"], terpilih=0)
         self.seg_zoom.dipilih.connect(self._pada_pilihan_zoom)
-        lay.addWidget(self.seg_zoom)
+        lay.addWidget(grup(label("Zoom"), self.seg_zoom), 0, Qt.AlignVCenter)
 
         lay.addStretch(1)
-        lay.addWidget(_pemisah())
 
-        # Aksi seleksi, dikelompokkan terpisah dari kontrol tampilan
         self.btn_pilih_semua = QPushButton("Pilih Semua")
-        self.btn_pilih_semua.setFixedHeight(24)
+        self.btn_pilih_semua.setFixedHeight(26)
         self.btn_pilih_semua.setProperty("class", "halus")
         self.btn_pilih_semua.setToolTip("Pilih seluruh area layar (Ctrl+A)")
         self.btn_pilih_semua.clicked.connect(self._pilih_seluruh_layar)
-        lay.addWidget(self.btn_pilih_semua)
 
         self.btn_hapus_seleksi = QPushButton("Hapus Seleksi")
-        self.btn_hapus_seleksi.setFixedHeight(24)
+        self.btn_hapus_seleksi.setFixedHeight(26)
         self.btn_hapus_seleksi.setProperty("class", "halus")
         self.btn_hapus_seleksi.setToolTip("Hapus kotak seleksi (Esc)")
         self.btn_hapus_seleksi.clicked.connect(self._batal_seleksi)
-        lay.addWidget(self.btn_hapus_seleksi)
+        lay.addWidget(grup(self.btn_pilih_semua, self.btn_hapus_seleksi), 0, Qt.AlignVCenter)
 
         return bar
 
     def _buat_rel_alat(self):
         rail = QFrame()
         rail.setFixedWidth(46)
+        rail.setObjectName("relAlat")
         rail.setStyleSheet(f"""
-            QFrame {{
+            QFrame#relAlat {{
                 background-color: {tema.TOKEN['latar-bar']};
                 border: none;
                 border-right: 1px solid {tema.TOKEN['garis']};
@@ -403,6 +500,12 @@ class JendelaUtama(QMainWindow):
         self.btn_auto.setVisible(False)
         p_ekspor.tambah_widget(self.btn_auto)
 
+        self.btn_salin = komponen.TombolAksiTaktil("Salin ke Clipboard", shortcut="Ctrl+C", jenis_ikon="salin")
+        self.btn_salin.setToolTip("Salin area terpilih untuk ditempel di WhatsApp, Word, dan lainnya")
+        self.btn_salin.clicked.connect(self._aksi_salin)
+        self.btn_salin.setVisible(False)
+        p_ekspor.tambah_widget(self.btn_salin)
+
         self.btn_ambil_layar = komponen.TombolAksiTaktil("Ambil Ulang Layar", shortcut="F5", jenis_ikon="kamera")
         self.btn_ambil_layar.clicked.connect(self._aksi_ambil_layar)
         self.btn_ambil_layar.setVisible(False)
@@ -422,11 +525,11 @@ class JendelaUtama(QMainWindow):
         self.box_hp_info = QWidget()
         lay_box = QVBoxLayout(self.box_hp_info)
         lay_box.setContentsMargins(0, 0, 0, 2)
-        lay_box.setSpacing(5)
+        lay_box.setSpacing(4)
 
         self.lbl_info_model = QLabel("Tidak ada perangkat terdeteksi")
         self.lbl_info_model.setWordWrap(True)
-        self.lbl_info_model.setStyleSheet(f"color: {tema.TOKEN['teks-utama']}; font-weight: 600; font-size: 11px;")
+        self.lbl_info_model.setStyleSheet(f"color: {tema.TOKEN['teks-utama']}; font-weight: 600; font-size: 12px;")
         lay_box.addWidget(self.lbl_info_model)
 
         self.lbl_info_res = QLabel("Resolusi: -")
@@ -447,7 +550,7 @@ class JendelaUtama(QMainWindow):
         lay_hd.setSpacing(8)
 
         lbl_zoom_hp = QLabel("Skala render di HP")
-        lbl_zoom_hp.setStyleSheet(f"color: {tema.TOKEN['teks-redup']}; font-size: 10px; margin-top: 4px;")
+        lbl_zoom_hp.setStyleSheet(f"color: {tema.TOKEN['teks-redup']}; font-size: 11px; margin-top: 6px;")
         lay_hd.addWidget(lbl_zoom_hp)
 
         self.seg_zoom_hp = komponen.SegmenPilihanAdobe(["100%", "125%", "150%", "175%", "200%"], terpilih=0)
@@ -471,29 +574,34 @@ class JendelaUtama(QMainWindow):
         # 3. Panel Riwayat Sesi (Galeri Kartu)
         p_riwayat = komponen.PanelAccordionAdobe("Riwayat Foto", terbuka=True)
         self.lbl_total_foto = QLabel("Belum ada foto")
-        self.lbl_total_foto.setStyleSheet(f"color: {tema.TOKEN['teks-redup']}; font-weight: 700; font-size: 11px;")
+        self.lbl_total_foto.setStyleSheet(f"color: {tema.TOKEN['teks-redup']}; font-weight: 600; font-size: 11px;")
         p_riwayat.tambah_widget(self.lbl_total_foto)
 
         self.list_riwayat = QListWidget()
         self.list_riwayat.setFixedHeight(180)
         self.list_riwayat.itemDoubleClicked.connect(self._buka_item_riwayat)
+        self.list_riwayat.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.list_riwayat.customContextMenuRequested.connect(self._menu_riwayat)
+        self.list_riwayat.setToolTip("Klik dua kali untuk membuka, klik kanan untuk opsi lain")
         p_riwayat.tambah_widget(self.list_riwayat)
         lay.addWidget(p_riwayat)
 
         # 4. Panel Pemrosesan Massal (Batch Utility)
         p_batch = komponen.PanelAccordionAdobe("Pemrosesan Massal", terbuka=False)
-        lbl_batch_info = QLabel("Olah semua tangkapan layar penuh yang tersimpan di folder hasil.")
+        lbl_batch_info = QLabel("Olah semua tangkapan layar penuh di hasil/layar sekaligus.")
         lbl_batch_info.setWordWrap(True)
-        lbl_batch_info.setStyleSheet(f"color: {tema.TOKEN['teks-kedua']}; font-size: 11px; line-height: 1.4;")
+        lbl_batch_info.setStyleSheet(f"color: {tema.TOKEN['teks-redup']}; font-size: 11px;")
         p_batch.tambah_widget(lbl_batch_info)
 
-        btn_batch_crop = komponen.TombolAksiTaktil("Potong Massal Semua Layar", jenis_ikon="potong")
-        btn_batch_crop.clicked.connect(self._aksi_batch_crop)
-        p_batch.tambah_widget(btn_batch_crop)
+        self.btn_batch_crop = komponen.TombolAksiTaktil("Potong Semua Layar", jenis_ikon="potong")
+        self.btn_batch_crop.setToolTip("Membuang status bar dan tombol penampil. Aslinya disalin ke hasil/asli lebih dulu.")
+        self.btn_batch_crop.clicked.connect(self._aksi_batch_crop)
+        p_batch.tambah_widget(self.btn_batch_crop)
 
-        btn_batch_hd = komponen.TombolAksiTaktil("Upscale HD 2x Semua Foto", jenis_ikon="otomatis")
-        btn_batch_hd.clicked.connect(self._aksi_batch_hd)
-        p_batch.tambah_widget(btn_batch_hd)
+        self.btn_batch_hd = komponen.TombolAksiTaktil("Buat Versi HD 2x Semua", jenis_ikon="otomatis")
+        self.btn_batch_hd.setToolTip("Menulis salinan 2x ke hasil/hd. Berkas sumber tidak diubah.")
+        self.btn_batch_hd.clicked.connect(self._aksi_batch_hd)
+        p_batch.tambah_widget(self.btn_batch_hd)
         lay.addWidget(p_batch)
 
         lay.addStretch(1)
@@ -502,16 +610,17 @@ class JendelaUtama(QMainWindow):
 
     def _buat_bilah_status(self):
         bar = QFrame()
-        bar.setFixedHeight(24)
+        bar.setFixedHeight(26)
+        bar.setObjectName("bilahStatus")
         bar.setStyleSheet(f"""
-            QFrame {{
+            QFrame#bilahStatus {{
                 background-color: {tema.TOKEN['latar-bar']};
                 border: none;
                 border-top: 1px solid {tema.TOKEN['garis']};
             }}
         """)
         lay = QHBoxLayout(bar)
-        lay.setContentsMargins(14, 0, 14, 0)
+        lay.setContentsMargins(12, 0, 12, 0)
         lay.setSpacing(12)
 
         self.status_msg = QLabel("Siap. Sambungkan HP via USB lalu tekan F5 untuk mengambil layar.")
@@ -593,6 +702,22 @@ class JendelaUtama(QMainWindow):
         act_f11.triggered.connect(self._toggle_layar_penuh)
         self.addAction(act_f11)
 
+        for kunci, aksi in [
+            ("Ctrl+S", self._aksi_simpan_seleksi),
+            ("Ctrl+C", self._aksi_salin),
+            ("Ctrl+O", self._aksi_buka_berkas),
+            ("Ctrl+0", lambda: self._pada_pilihan_zoom(0, "")),
+            ("Ctrl+1", lambda: self._pada_pilihan_zoom(2, "")),
+            ("Ctrl+=", lambda: self.kanvas_widget.kanvas.zoom_di(1.25)),
+            ("Ctrl++", lambda: self.kanvas_widget.kanvas.zoom_di(1.25)),
+            ("Ctrl+-", lambda: self.kanvas_widget.kanvas.zoom_di(0.8)),
+            ("F1", self._tampilkan_bantuan),
+        ]:
+            act = QAction(self)
+            act.setShortcut(QKeySequence(kunci))
+            act.triggered.connect(aksi)
+            self.addAction(act)
+
     def _toggle_layar_penuh(self):
         if self.isFullScreen():
             self.showMaximized()
@@ -615,7 +740,7 @@ class JendelaUtama(QMainWindow):
         super().keyPressEvent(event)
 
     def _toggle_panel_samping(self):
-        visible = self.panel_kanan.isVisible()
+        visible = not self.panel_kanan.isHidden()
         self.panel_kanan.setVisible(not visible)
         self.btn_toggle_panel.setToolTip("Tampilkan panel samping (Tab)" if visible else "Sembunyikan panel samping (Tab)")
 
@@ -647,13 +772,22 @@ class JendelaUtama(QMainWindow):
         self.status_msg.setText(pesan)
 
     def _perbarui_status_hp(self):
-        serial, status, _ = adb.cek_perangkat()
+        """Memeriksa HP di benang latar; hasilnya diterapkan oleh _terapkan_status_hp."""
+        if self._cek_berjalan:
+            return
+        self._cek_berjalan = True
+        self._jalankan(PekerjaFungsi(_baca_status_hp), self._terapkan_status_hp)
+
+    def _terapkan_status_hp(self, hasil, err):
+        self._cek_berjalan = False
+        if err or not hasil:
+            return
+        serial, status, model, info = hasil
         self.serial_hp = serial
-        self.info_hp = None
+        self.info_hp = info
 
         if status == "device":
-            self.nama_model_hp = adb.model_perangkat(serial) or "Android Device"
-            self.info_hp = adb.info_layar(serial)
+            self.nama_model_hp = model
             self.lbl_info_model.setText(self.nama_model_hp)
             self.lbl_info_res.setVisible(True)
             self.lbl_info_dpi.setVisible(True)
@@ -718,7 +852,7 @@ class JendelaUtama(QMainWindow):
         k = self.kanvas_widget.kanvas
         ada_gambar = self.pil_layar_saat_ini is not None
         ada_sel = ada_gambar and k.has_sel and k.sel_w >= 10 and k.sel_h >= 10
-        sibuk = self.sedang_mengambil or self.sedang_menyimpan
+        sibuk = self.sedang_mengambil or self.sedang_menyimpan or self.sedang_batch
 
         if not ada_gambar:
             self.btn_utama.set_konten("Ambil Layar HP", "F5", "kamera")
@@ -742,6 +876,9 @@ class JendelaUtama(QMainWindow):
         self.btn_ambil_layar.setEnabled(not sibuk)
         self.btn_auto.setVisible(ada_sel)
         self.btn_auto.setEnabled(not sibuk)
+        self.btn_salin.setVisible(ada_sel)
+        self.btn_batch_crop.setEnabled(not sibuk)
+        self.btn_batch_hd.setEnabled(not sibuk)
         self.chk_hd.setVisible(ada_gambar)
         self.chk_raw.setVisible(ada_gambar)
 
@@ -803,21 +940,12 @@ class JendelaUtama(QMainWindow):
         if self.sedang_mengambil or self.sedang_menyimpan:
             return
 
-        self._perbarui_status_hp()
-        if not self.serial_hp:
-            self.status_msg.setText("Gagal: Perangkat Android tidak terdeteksi via USB.")
-            self.toast.tampil("Perangkat Android tidak terdeteksi via USB", sukses=False)
-            return
-
         self.sedang_mengambil = True
         self.btn_ambil_layar.setEnabled(False)
         self.tool_cap.setEnabled(False)
-        self.status_msg.setText("Mengambil framebuffer dari ponsel via ADB...")
+        self.status_msg.setText("Mengambil layar dari ponsel…")
         self._perbarui_kontrol()
-
-        self.pekerja_ambil = PekerjaAmbilLayar(self.serial_hp)
-        self.pekerja_ambil.selesai.connect(self._selesai_ambil_layar)
-        self.pekerja_ambil.start()
+        self._jalankan(PekerjaAmbilLayar(), self._selesai_ambil_layar)
 
     def _selesai_ambil_layar(self, raw_png, err):
         self.sedang_mengambil = False
@@ -827,21 +955,90 @@ class JendelaUtama(QMainWindow):
             self.status_msg.setText(f"Gagal mengambil layar: {err or 'Data kosong'}")
             self.toast.tampil(f"Gagal: {err or 'Data kosong'}", sukses=False)
             self._perbarui_kontrol()
+            self._perbarui_status_hp()
             return
+        self._muat_gambar(raw_png, "Layar")
 
+    def _muat_gambar(self, data, sumber):
+        """Memuat bytes gambar (dari HP atau berkas) ke kanvas."""
         try:
-            self.pil_layar_saat_ini = Image.open(io.BytesIO(raw_png))
-            self.pixmap_saat_ini = QPixmap()
-            self.pixmap_saat_ini.loadFromData(raw_png)
-
-            self.kanvas_widget.kanvas.set_gambar(self.pixmap_saat_ini)
-            w, h = self.pil_layar_saat_ini.size
-            self._perbarui_label_dokumen()
-            self.status_msg.setText(f"Layar {w}×{h} px berhasil dimuat. Tarik kotak pada area foto yang diinginkan.")
-            self.toast.tampil(f"Layar {w}×{h} px berhasil dimuat")
+            pil = Image.open(io.BytesIO(data))
+            pil.load()
+            pix = QPixmap()
+            if not pix.loadFromData(data):
+                raise ValueError("format gambar tidak didukung")
         except Exception as e:
-            self.status_msg.setText(f"Galat memuat citra: {e}")
+            self.status_msg.setText(f"Gagal memuat gambar: {e}")
+            self.toast.tampil("Gambar tidak bisa dibuka", sukses=False)
+            self._perbarui_kontrol()
+            return
+        self.pil_layar_saat_ini = pil
+        self.pixmap_saat_ini = pix
+        self.setWindowTitle(f"{sumber} — Phone Capture Studio")
+        self.kanvas_widget.kanvas.set_gambar(pix)
+        w, h = pil.size
+        self._perbarui_label_dokumen()
+        self.status_msg.setText(f"{sumber} {w}×{h} px dimuat. Tarik kotak pada area yang ingin disimpan, atau tekan A.")
+        self.toast.tampil(f"{sumber} {w}×{h} px dimuat")
         self._perbarui_kontrol()
+        self.kanvas_widget.kanvas.setFocus()
+
+    def _aksi_buka_berkas(self):
+        if self.sedang_mengambil or self.sedang_menyimpan:
+            return
+        jalur, _ = QFileDialog.getOpenFileName(
+            self, "Buka gambar", lokasi.folder_layar_penuh(),
+            "Gambar (*.png *.jpg *.jpeg *.webp *.bmp)")
+        if jalur:
+            self._buka_berkas(jalur)
+
+    def _buka_berkas(self, jalur):
+        try:
+            with open(jalur, "rb") as f:
+                data = f.read()
+        except OSError as e:
+            self.toast.tampil(f"Gagal membuka: {e}", sukses=False)
+            return
+        self._muat_gambar(data, os.path.basename(jalur))
+
+    def _jalur_dari_drop(self, event):
+        md = event.mimeData()
+        if md.hasUrls():
+            for url in md.urls():
+                jalur = url.toLocalFile()
+                if jalur.lower().endswith(EKSTENSI_GAMBAR):
+                    return jalur
+        return None
+
+    def dragEnterEvent(self, event):
+        if self._jalur_dari_drop(event):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        jalur = self._jalur_dari_drop(event)
+        if jalur:
+            event.acceptProposedAction()
+            self._buka_berkas(jalur)
+
+    def _aksi_salin(self):
+        if not self.pixmap_saat_ini:
+            return
+        k = self.kanvas_widget.kanvas
+        if k.has_sel and k.sel_w >= 10 and k.sel_h >= 10:
+            pix = self.pixmap_saat_ini.copy(k.sel_x, k.sel_y, k.sel_w, k.sel_h)
+        else:
+            pix = self.pixmap_saat_ini
+        QApplication.clipboard().setPixmap(pix)
+        self.status_msg.setText(f"{pix.width()}×{pix.height()} px disalin ke clipboard. Tempel dengan Ctrl+V.")
+        self.toast.tampil("Disalin ke clipboard")
+
+    def _jalankan(self, pekerja, slot):
+        """Menyimpan referensi benang sampai selesai agar tidak dihancurkan saat berjalan."""
+        self._pekerja.add(pekerja)
+        pekerja.selesai.connect(slot)
+        pekerja.finished.connect(lambda: self._pekerja.discard(pekerja))
+        pekerja.start()
+        return pekerja
 
     def _aksi_simpan_seleksi(self):
         if self.sedang_menyimpan or self.sedang_mengambil:
@@ -865,9 +1062,8 @@ class JendelaUtama(QMainWindow):
         buat_hd = self.chk_hd.isChecked()
         simpan_raw = self.chk_raw.isChecked()
 
-        self.pekerja_simpan = PekerjaSimpan(self.pil_layar_saat_ini, box, buat_hd=buat_hd, simpan_raw=simpan_raw)
-        self.pekerja_simpan.selesai.connect(self._selesai_simpan)
-        self.pekerja_simpan.start()
+        self._jalankan(PekerjaSimpan(self.pil_layar_saat_ini, box, buat_hd=buat_hd, simpan_raw=simpan_raw),
+                       self._selesai_simpan)
 
     def _selesai_simpan(self, hasil, err):
         self.sedang_menyimpan = False
@@ -893,106 +1089,128 @@ class JendelaUtama(QMainWindow):
         x, y, w, h = processor.deteksi_kotak_foto(self.pil_layar_saat_ini)
         if w > 50 and h > 50:
             self.kanvas_widget.kanvas.set_seleksi_piksel(x, y, w, h)
-            self.status_msg.setText(f"Deteksi otomatis: {w}×{h} px. Tekan Enter untuk menyimpan.")
+            self.status_msg.setText(f"Deteksi otomatis: {w}×{h} px. Rapikan dengan panah/pegangan, lalu Enter.")
             self.toast.tampil(f"Batas foto terdeteksi: {w}×{h} px")
+            self.kanvas_widget.kanvas.setFocus()
         else:
             self.status_msg.setText("Deteksi batas otomatis gagal. Silakan tarik kotak secara manual.")
             self.toast.tampil("Deteksi batas otomatis gagal", sukses=False)
 
     def _aksi_terapkan_hd(self):
-        self._perbarui_status_hp()
         if not self.serial_hp:
-            self.status_msg.setText("Gagal: HP tidak terhubung.")
+            self.toast.tampil("HP tidak terhubung", sukses=False)
             return
+        skala = [1.0, 1.25, 1.5, 1.75, 2.0][max(0, self.seg_zoom_hp.indeks_aktif)]
+        self.btn_apply_hd.setEnabled(False)
+        self.btn_reset_hd.setEnabled(False)
+        self.status_msg.setText("Menerapkan mode HD di ponsel…")
+        self._jalankan(PekerjaFungsi(adb.terapkan_hd, self.serial_hp, skala), self._selesai_hd)
 
-        daftar_skala = [1.0, 1.25, 1.5, 1.75, 2.0]
-        skala = daftar_skala[self.seg_zoom_hp.indeks_aktif]
-        ok, msg = adb.terapkan_hd(self.serial_hp, skala)
+    def _selesai_hd(self, hasil, err):
+        self.btn_apply_hd.setEnabled(True)
+        self.btn_reset_hd.setEnabled(True)
+        ok, msg = hasil if hasil else (False, err or "tidak diketahui")
         if ok:
-            self._perbarui_status_hp()
-            self.status_msg.setText(f"{msg}. Buka kembali foto di HP lalu tekan F5.")
-            self.toast.tampil("Mode HD x2 Aktif")
+            self.status_msg.setText(f"{msg}. Tunggu layar HP stabil, lalu tekan F5.")
+            self.toast.tampil("Mode HD aktif")
         else:
             self.status_msg.setText(f"Gagal: {msg}")
             self.toast.tampil(f"Gagal: {msg}", sukses=False)
+        self._perbarui_status_hp()
 
     def _aksi_reset_hd(self):
-        self._perbarui_status_hp()
         if not self.serial_hp:
+            self.toast.tampil("HP tidak terhubung", sukses=False)
             return
-        ok, msg = adb.reset_layar(self.serial_hp)
+        self.btn_apply_hd.setEnabled(False)
+        self.btn_reset_hd.setEnabled(False)
+        self._jalankan(PekerjaFungsi(adb.reset_layar, self.serial_hp), self._selesai_reset_hd)
+
+    def _selesai_reset_hd(self, hasil, err):
+        self.btn_apply_hd.setEnabled(True)
+        self.btn_reset_hd.setEnabled(True)
+        self.status_msg.setText(hasil[1] if hasil else f"Gagal: {err}")
+        if hasil:
+            self.toast.tampil("Layar ponsel kembali normal")
         self._perbarui_status_hp()
-        self.status_msg.setText(msg)
-        self.toast.tampil("Layar ponsel kembali ke resolusi normal")
 
     def _aksi_batch_crop(self):
-        folder_layar = lokasi.folder_layar_penuh()
-        berkas = [f for f in os.listdir(folder_layar) if f.endswith(".png")]
-        if not berkas:
-            QMessageBox.information(self, "Batch Processing", f"Tidak ada berkas PNG di {folder_layar}")
+        if self.sedang_batch:
             return
-
+        folder_layar = lokasi.folder_layar_penuh()
+        berkas = [f for f in os.listdir(folder_layar) if f.lower().endswith(".png")]
+        if not berkas:
+            QMessageBox.information(self, "Potong Semua Layar", f"Tidak ada berkas PNG di\n{folder_layar}")
+            return
         jawab = QMessageBox.question(
             self,
-            "Pemrosesan Massal",
-            f"{len(berkas)} tangkapan layar akan dipotong dan berkas aslinya ditimpa.\n\nLanjutkan?",
+            "Potong Semua Layar",
+            f"{len(berkas)} berkas di hasil/layar akan diperiksa. Yang masih berupa layar penuh dipotong "
+            "dan ditimpa; salinan aslinya disimpan di hasil/asli.\n\nLanjutkan?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
         if jawab != QMessageBox.Yes:
             return
+        self._mulai_batch("Memotong", PekerjaFungsi(_potong_massal, folder_layar, lokasi.folder_layar_asli(),
+                                                     dengan_kemajuan=True), self._selesai_batch_crop)
 
-        sukses = 0
-        for f in berkas:
-            p = os.path.join(folder_layar, f)
-            try:
-                img = Image.open(p)
-                x, y, w, h = processor.deteksi_kotak_foto(img)
-                if w > 100 and h > 100:
-                    box = (x, y, x + w, y + h)
-                    img.crop(box).save(p, optimize=True)
-                    sukses += 1
-            except Exception:
-                pass
-        self.status_msg.setText(f"Pemotongan massal selesai: {sukses} dari {len(berkas)} berkas dipotong.")
-        self.toast.tampil(f"Batch Crop: {sukses}/{len(berkas)} selesai")
+    def _mulai_batch(self, kata, pekerja, slot):
+        self.sedang_batch = True
+        self._perbarui_kontrol()
+        pekerja.kemajuan.connect(lambda i, n: self.status_msg.setText(f"{kata} {i} dari {n}…"))
+        self._jalankan(pekerja, slot)
+
+    def _selesai_batch_crop(self, hasil, err):
+        self.sedang_batch = False
+        self._perbarui_kontrol()
+        if err or not hasil:
+            self.status_msg.setText(f"Pemotongan gagal: {err}")
+            self.toast.tampil("Pemotongan massal gagal", sukses=False)
+            return
+        teks = f"{hasil['dipotong']} dipotong, {hasil['dilewati']} dilewati"
+        if hasil["gagal"]:
+            teks += f", {hasil['gagal']} gagal"
+        self.status_msg.setText(f"Pemotongan selesai: {teks} (dari {hasil['total']} berkas).")
+        self.toast.tampil(f"Selesai: {teks}", sukses=not hasil["gagal"])
 
     def _aksi_batch_hd(self):
-        folder_layar = lokasi.folder_layar_penuh()
-        folder_hd = lokasi.folder_layar_hd()
-        berkas = [f for f in os.listdir(folder_layar) if f.endswith(".png")]
-        if not berkas:
-            QMessageBox.information(self, "Batch Processing", f"Tidak ada berkas PNG di {folder_layar}")
+        if self.sedang_batch:
             return
+        folder_layar = lokasi.folder_layar_penuh()
+        berkas = [f for f in os.listdir(folder_layar) if f.lower().endswith(".png")]
+        if not berkas:
+            QMessageBox.information(self, "Buat Versi HD", f"Tidak ada berkas PNG di\n{folder_layar}")
+            return
+        self._mulai_batch("Membuat versi HD", PekerjaFungsi(_hd_massal, folder_layar, lokasi.folder_layar_hd(),
+                                                            dengan_kemajuan=True), self._selesai_batch_hd)
 
-        sukses = 0
-        for f in berkas:
-            p_in = os.path.join(folder_layar, f)
-            p_out = os.path.join(folder_hd, f.replace("layar_", "hd_"))
-            try:
-                img = Image.open(p_in)
-                hd = processor.proses_hd_lanczos(img)
-                hd.save(p_out, optimize=True)
-                sukses += 1
-            except Exception:
-                pass
-        self.status_msg.setText(f"Upscale HD massal selesai: {sukses} berkas dibuat di hasil/hd/.")
-        self.toast.tampil(f"Batch HD: {sukses} berkas diproses")
+    def _selesai_batch_hd(self, hasil, err):
+        self.sedang_batch = False
+        self._perbarui_kontrol()
+        if err or not hasil:
+            self.status_msg.setText(f"Gagal membuat versi HD: {err}")
+            self.toast.tampil("Gagal membuat versi HD", sukses=False)
+            return
+        self.status_msg.setText(f"{hasil['dibuat']} versi HD dibuat di hasil/hd"
+                                + (f", {hasil['gagal']} gagal." if hasil["gagal"] else "."))
+        self.toast.tampil(f"{hasil['dibuat']} versi HD dibuat", sukses=not hasil["gagal"])
 
     def _perbarui_total_foto(self, jumlah):
         if jumlah:
             self.lbl_total_foto.setText(f"{jumlah} foto tersimpan")
-            self.lbl_total_foto.setStyleSheet(f"color: {tema.TOKEN['status-ok']}; font-weight: 700; font-size: 11px;")
+            self.lbl_total_foto.setStyleSheet(f"color: {tema.TOKEN['status-ok']}; font-weight: 600; font-size: 11px;")
         else:
             self.lbl_total_foto.setText("Belum ada foto")
-            self.lbl_total_foto.setStyleSheet(f"color: {tema.TOKEN['teks-redup']}; font-weight: 700; font-size: 11px;")
+            self.lbl_total_foto.setStyleSheet(f"color: {tema.TOKEN['teks-redup']}; font-weight: 600; font-size: 11px;")
 
     def _muat_riwayat_awal(self):
         folder = lokasi.folder_hasil()
         if not os.path.isdir(folder):
             return
         berkas = sorted([f for f in os.listdir(folder) if f.startswith("foto_") and f.endswith(".png")])
-        self._perbarui_total_foto(len(berkas))
+        self._total_foto = len(berkas)
+        self._perbarui_total_foto(self._total_foto)
         if not berkas:
             self.list_riwayat.setFixedHeight(84)
             item = QListWidgetItem()
@@ -1006,7 +1224,7 @@ class JendelaUtama(QMainWindow):
             return
 
         self.list_riwayat.setFixedHeight(180)
-        for f in berkas[-10:]:
+        for f in reversed(berkas[-20:]):
             jalur = os.path.join(folder, f)
             item = QListWidgetItem()
             item.setSizeHint(QSize(240, 56))
@@ -1026,14 +1244,71 @@ class JendelaUtama(QMainWindow):
         self.list_riwayat.setFixedHeight(180)
         self.list_riwayat.insertItem(0, item)
         self.list_riwayat.setItemWidget(item, kartu)
-        self._perbarui_total_foto(self.list_riwayat.count())
+        while self.list_riwayat.count() > 20:
+            self.list_riwayat.takeItem(self.list_riwayat.count() - 1)
+        self._total_foto += 1
+        self._perbarui_total_foto(self._total_foto)
 
     def _buka_item_riwayat(self, item):
         jalur = item.data(Qt.UserRole)
         if jalur and os.path.isfile(jalur):
-            subprocess.Popen(["explorer", jalur])
+            os.startfile(jalur)
+
+    def _menu_riwayat(self, pos):
+        item = self.list_riwayat.itemAt(pos)
+        jalur = item.data(Qt.UserRole) if item else None
+        if not jalur or not os.path.isfile(jalur):
+            return
+        menu = QMenu(self)
+        menu.addAction("Buka", lambda: os.startfile(jalur))
+        menu.addAction("Tampilkan di folder", lambda: subprocess.Popen(f'explorer /select,"{os.path.normpath(jalur)}"'))
+        menu.addAction("Salin gambar", lambda: (QApplication.clipboard().setPixmap(QPixmap(jalur)),
+                                                self.toast.tampil("Disalin ke clipboard")))
+        menu.addAction("Muat ke kanvas", lambda: self._buka_berkas(jalur))
+        menu.exec(self.list_riwayat.viewport().mapToGlobal(pos))
+
+    def _tampilkan_bantuan(self):
+        baris = [
+            ("F5", "Ambil layar HP"), ("Ctrl+O", "Buka gambar dari PC"),
+            ("Seret", "Buat seleksi; tarik pegangan untuk mengubah ukuran"),
+            ("Enter / Ctrl+S", "Simpan seleksi"), ("Ctrl+C", "Salin seleksi ke clipboard"),
+            ("A", "Pilih area foto otomatis"), ("Ctrl+A", "Pilih seluruh layar"),
+            ("Esc / Ctrl+D", "Hapus seleksi"), ("Panah", "Geser seleksi 1 px (Shift: 10 px)"),
+            ("M / H / Z", "Alat seleksi, geser, zoom (Alt+klik: perkecil)"),
+            ("Spasi (tahan)", "Geser kanvas sementara"), ("Klik kanan + seret", "Geser kanvas"),
+            ("Ctrl+scroll", "Zoom di posisi kursor"), ("Ctrl+0 / Ctrl+1", "Pas layar / 100%"),
+            ("Ctrl+ + / Ctrl+ -", "Perbesar / perkecil"),
+            ("Tab", "Tampilkan atau sembunyikan panel"), ("F11", "Layar penuh"),
+        ]
+        isi = "".join(f"<tr><td style='padding:3px 18px 3px 0'><b>{k}</b></td><td>{v}</td></tr>" for k, v in baris)
+        QMessageBox.information(self, "Pintasan keyboard", f"<table>{isi}</table>")
+
+    def _muat_pengaturan(self):
+        st = QSettings()
+        self.chk_hd.setChecked(st.value("simpan/hd", True, type=bool))
+        self.chk_raw.setChecked(st.value("simpan/layar_penuh", False, type=bool))
+        idx_rasio = st.value("seleksi/rasio", 0, type=int)
+        if 0 <= idx_rasio < self.cmb_rasio.count():
+            self.cmb_rasio.setCurrentIndex(idx_rasio)
+        idx_hp = st.value("hd/skala", 0, type=int)
+        if 0 <= idx_hp < len(self.seg_zoom_hp.tombol_list):
+            self.seg_zoom_hp.set_aktif(idx_hp)
+        if not st.value("tampilan/panel", True, type=bool):
+            self._toggle_panel_samping()
+
+    def _simpan_pengaturan(self):
+        st = QSettings()
+        st.setValue("simpan/hd", self.chk_hd.isChecked())
+        st.setValue("simpan/layar_penuh", self.chk_raw.isChecked())
+        st.setValue("seleksi/rasio", self.cmb_rasio.currentIndex())
+        st.setValue("hd/skala", self.seg_zoom_hp.indeks_aktif)
+        st.setValue("tampilan/panel", not self.panel_kanan.isHidden())
 
     def closeEvent(self, event):
+        if self.sedang_batch or self.sedang_menyimpan:
+            QMessageBox.information(self, "Phone Capture Studio", "Tunggu sampai proses yang berjalan selesai.")
+            event.ignore()
+            return
         if self.serial_hp:
             info = adb.info_layar(self.serial_hp)
             if info and info.get("override"):
@@ -1050,4 +1325,8 @@ class JendelaUtama(QMainWindow):
                     return
                 elif tanya == QMessageBox.Yes:
                     adb.reset_layar(self.serial_hp)
+        self._simpan_pengaturan()
+        self.timer_status.stop()
+        for t in list(self._pekerja):
+            t.wait(5000)
         event.accept()

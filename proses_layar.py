@@ -17,19 +17,8 @@ if not HD.exists():
     HD = ROOT / "layar_penuh_hd"
 
 sys.path.insert(0, str(ROOT / "app"))
-from engine.processor import deteksi_kotak_foto, proses_hd_lanczos
+from engine.processor import belum_dipotong, deteksi_kotak_foto, proses_hd_lanczos
 from PIL import Image
-import numpy as np
-
-
-def is_uncropped(img):
-    a = np.asarray(img.convert("RGB"))
-    h = a.shape[0]
-    if h < 1000:
-        return False
-    top = a[: int(h * 0.037)].mean()
-    band = a[int(h * 0.040): int(h * 0.105)].mean()
-    return top > 200 and band < 50
 
 
 if __name__ == "__main__":
@@ -46,7 +35,7 @@ if __name__ == "__main__":
         img = Image.open(f)
         img.load()
         if mode in ("detect", "crop"):
-            if not is_uncropped(img):
+            if not belum_dipotong(img):
                 print(f.name, img.size, "-> dilewati (sudah dipotong)")
                 continue
             x, y, w, h = deteksi_kotak_foto(img)

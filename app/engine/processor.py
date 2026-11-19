@@ -34,6 +34,17 @@ def proses_hd_lanczos(img):
     return hasil
 
 
+def belum_dipotong(img):
+    """True bila gambar masih berupa layar penampil utuh (status bar terang + bilah gelap di atas foto)."""
+    a = np.asarray(img.convert("RGB"))
+    h = a.shape[0]
+    if h < 1000:
+        return False
+    atas = a[: int(h * 0.037)].mean()
+    pita = a[int(h * 0.040): int(h * 0.105)].mean()
+    return atas > 200 and pita < 50
+
+
 def deteksi_kotak_foto(img):
     """Mendeteksi batas foto pada tangkapan layar penampil (membuang status bar & tombol)."""
     a = np.asarray(img.convert("RGB")).astype(int)
@@ -76,7 +87,7 @@ def deteksi_kotak_foto(img):
 
 
 def simpan_hasil(img_crop, buat_hd=False):
-    """Menyimpan potongan foto ke folder foto_absensi."""
+    """Menyimpan potongan foto ke hasil/foto (dan versi 2x ke hasil/hd bila diminta)."""
     folder = lokasi.folder_hasil()
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:19]
     nama_file = f"foto_{stamp}.png"
@@ -103,7 +114,7 @@ def simpan_hasil(img_crop, buat_hd=False):
 
 
 def simpan_layar_penuh(img_full):
-    """Menyimpan seluruh layar mentah ke layar_penuh/."""
+    """Menyimpan seluruh layar mentah ke hasil/layar."""
     folder = lokasi.folder_layar_penuh()
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:19]
     nama_file = f"layar_{stamp}.png"

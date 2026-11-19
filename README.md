@@ -12,11 +12,14 @@ No root, nothing to install on the phone, no cloud.
 
 - **Capture over ADB** — press `F5` and the current phone screen appears on the canvas.
 - **Native-resolution crops** — your selection maps to real screen pixels, not the zoomed preview.
-- **Zoom and pan** — fit, 50–200%, or `Ctrl` + scroll around the cursor, with a live size readout.
+- **Precise selection** — eight resize handles, aspect-ratio presets, and arrow keys to nudge by a pixel. Above 100% zoom the preview shows real pixels instead of a blur.
+- **Zoom and pan** — fit, 50–200%, or `Ctrl` + scroll around the cursor; hold `Space` to pan.
 - **Auto-select** — press `A` to detect a full-screen photo and select it for you.
+- **Copy or save** — `Enter` writes a PNG, `Ctrl` + `C` puts the selection on the clipboard.
+- **Works without a phone** — open an existing screenshot with `Ctrl` + `O` or drop it on the window.
 - **HD mode** — temporarily renders the phone at 2× resolution (up to 4096 px), with optional 125–200% display scaling. When you close the app, it offers to put the phone back to normal.
 - **2× upscale, no AI** — optional Lanczos upscale with light sharpening. It makes images larger and smoother; it never invents detail or changes faces.
-- **Batch tool** — `proses_layar.py` crops and upscales a folder of screenshots in one go.
+- **Batch tools** — crop or upscale a whole folder from the side panel (originals are backed up first), or from the command line with `proses_layar.py`.
 
 ## Getting started
 
@@ -53,16 +56,22 @@ Plug in your phone (USB mode: *File transfer*), allow the debugging prompt on th
 | Key | Action |
 | --- | --- |
 | `F5` | Capture the phone screen |
+| `Ctrl` + `O` | Open an image from disk |
 | Drag | Draw a selection |
-| `Enter` | Save the selection |
+| `Enter` / `Ctrl` + `S` | Save the selection |
+| `Ctrl` + `C` | Copy the selection |
 | `A` | Auto-select the photo on screen |
 | `Ctrl` + `A` | Select the whole screen |
 | `Esc` / `Ctrl` + `D` | Clear the selection |
-| `M` / `H` / `Z` | Select, hand and zoom tools |
+| Arrow keys | Nudge the selection by 1 px (`Shift`: 10 px) |
+| `M` / `H` / `Z` | Select, hand and zoom tools (`Alt` + click zooms out) |
+| `Space` (hold) | Pan temporarily |
 | `Ctrl` + scroll | Zoom at the cursor |
+| `Ctrl` + `0` / `Ctrl` + `1` | Fit / 100% |
 | Right-drag | Pan |
 | `Tab` | Show or hide the side panel |
 | `F11` | Full screen |
+| `F1` | List every shortcut |
 
 ## Where files go
 
@@ -85,7 +94,7 @@ python proses_layar.py crop     # crop in place (already-cropped files are skipp
 python proses_layar.py hd       # write 2x copies to hasil/hd/
 ```
 
-`crop` overwrites files, so keep a copy if you need the originals.
+`crop` overwrites files, so keep a copy if you need the originals. The **Potong Semua Layar** button in the app does the same job but copies each original to `hasil/asli/` first.
 
 ## How it works
 

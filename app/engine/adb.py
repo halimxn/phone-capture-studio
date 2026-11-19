@@ -68,9 +68,7 @@ def cek_perangkat():
             if serial.startswith("emulator-") or serial.startswith("127.0.0.1"):
                 continue
             if st == "device":
-                model_nama = model_perangkat(serial)
-                label = f"{model_nama} ({serial})" if model_nama else f"Terhubung ({serial})"
-                return serial, "device", label
+                return serial, "device", f"Terhubung ({serial})"
             elif st == "unauthorized":
                 return serial, "unauthorized", "Otorisasi dibutuhkan: ketuk Izinkan di HP"
             elif st == "offline":
@@ -79,10 +77,22 @@ def cek_perangkat():
     return None, "tidak_ada", "Tidak ada HP terhubung via USB"
 
 
+_cache_model = {}
+
+
 def model_perangkat(serial):
-    """Membaca merek & model perangkat Android via getprop."""
+    """Membaca merek & model perangkat Android via getprop (di-cache per serial)."""
     if not serial:
         return None
+    if serial in _cache_model:
+        return _cache_model[serial]
+    nama = _baca_model(serial)
+    if nama:
+        _cache_model[serial] = nama
+    return nama
+
+
+def _baca_model(serial):
     model, _ = _jalankan(["-s", serial, "shell", "getprop", "ro.product.model"])
     brand, _ = _jalankan(["-s", serial, "shell", "getprop", "ro.product.brand"])
     brand_str = brand.capitalize() if brand else ""
