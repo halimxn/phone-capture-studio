@@ -1,0 +1,28 @@
+# Hasil tangkapan & foto (berisi data pribadi / wajah)
+hasil/
+foto_absensi/
+layar_penuh/
+layar_penuh_asli/
+layar_penuh_hd/
+*.png
+*.jpg
+*.jpeg
+
+# Biner eksternal & arsip pihak ketiga
+adb/
+*.apk
+dev/arsip/
+
+# Python, Virtualenv, & Hasil Kompilasi
+.venv/
+dist/
+build/
+__pycache__/
+*.pyc
+
+# Alat desain lokal
+dev/rancangan/.impeccable/
+.impeccable/
+
+# Gambar dokumentasi README
+!docs/*.png
